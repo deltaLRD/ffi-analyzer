@@ -1,0 +1,16 @@
+[package]
+name = "ffi-analyzer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "cargo-ffi-analyzer"
+
+[dependencies]
+log = "0.4.22"
+pretty_env_logger = "0.5.0"
+llvm-ir = { version = "0.11.3", features = ["llvm-17"] }
+llvm-ir-analysis = { version = "0.4.0", features = ["llvm-17"] }
+rustc-demangle = "0.1"
+either = "1.15.0"
+md5 = "0.7.0"
