@@ -1,8 +1,14 @@
-use ffi_analyzer::{option::AnalysisOption, utils::{bb_contains, demangle_name, get_hash}};
-use llvm_ir::Module;
+use ffi_analyzer::{
+    option::AnalysisOption,
+    utils::{bb_contains, demangle_name, get_hash},
+};
+use llvm_ir::{HasDebugLoc, Module};
 use llvm_ir_analysis::CrossModuleAnalysis;
 use log::{error, info};
-use std::{collections::{BTreeMap, BTreeSet, VecDeque}, env};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    env,
+};
 fn main() {
     unsafe {
         std::env::set_var("RUST_LOG", "info");
@@ -20,7 +26,7 @@ fn main() {
     }
     let analyzer = CrossModuleAnalysis::new(&modules);
     let call_graph = analyzer.call_graph();
-    
+
     let mut dot_str = String::from("");
     let ffi_cnt = &options.ffi_functions.len();
     let mut infect_functions = BTreeSet::new();
@@ -28,7 +34,11 @@ fn main() {
         info!("ffi:{}", ffi);
         infect_functions.insert(ffi.to_string());
         let ffi_digest = md5::compute(ffi.as_bytes());
-        dot_str.push_str(&format!("    {} [color=red, label=\"{}\"];\n", &format!("Node{:x}", ffi_digest), ffi));
+        dot_str.push_str(&format!(
+            "    {} [color=red, label=\"{}\"];\n",
+            &format!("Node{:x}", ffi_digest),
+            ffi
+        ));
         let mut queue = VecDeque::new();
         let mut visit = BTreeMap::new();
         queue.push_back(ffi.to_string());
@@ -42,7 +52,9 @@ fn main() {
             // let now_str = demangle_name(&now);
             let now_str = &now;
             let now_digest = md5::compute(now_str.as_bytes());
-            let nexts = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_graph.callers(&now))) {
+            let nexts = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                call_graph.callers(&now)
+            })) {
                 Ok(callers) => callers,
                 Err(err) => {
                     error!("Error: {:?}", err);
@@ -53,25 +65,33 @@ fn main() {
                 match visit.get(&next.to_string()) {
                     Some(true) => {
                         continue;
-                    },
+                    }
                     _ => {}
                 }
                 let next_dam_str = demangle_name(&next.to_string());
                 let next_str = &next.to_string();
                 let next_digest = md5::compute(next_str.as_bytes());
 
-                dot_str.push_str(&format!("    {} [label=\"{}\"];\n", &format!("Node{:x}", next_digest), &next_dam_str));
-                dot_str.push_str(&format!("    {} -> {};\n", &format!("Node{:x}", next_digest), &format!("Node{:x}", now_digest)));
+                dot_str.push_str(&format!(
+                    "    {} [label=\"{}\"];\n",
+                    &format!("Node{:x}", next_digest),
+                    &next_dam_str
+                ));
+                dot_str.push_str(&format!(
+                    "    {} -> {};\n",
+                    &format!("Node{:x}", next_digest),
+                    &format!("Node{:x}", now_digest)
+                ));
                 infect_functions.insert(next_dam_str);
                 queue.push_back(next.to_string());
             }
         }
     }
-    
+
     let dot_str = format!("digraph G {{\n    rankdir=LR;\n{}\n}}", dot_str);
     let mut file = std::fs::File::create("call_graph.dot").unwrap();
     std::io::Write::write_all(&mut file, dot_str.as_bytes()).unwrap();
-    
+
     // control flow graph
     info!("Start control flow graph");
     let mut dot_str = String::from("");
@@ -151,10 +171,10 @@ fn main() {
                             }
                         },
                     }
-                
+
                 }
             }
-            
+
             dot_str.push_str(&format!("    subgraph {} {{\n", &function_str));
             dot_str.push_str(&format!("        style=filled;\n"));
             dot_str.push_str(&format!("        color=lightgrey;\n"));
@@ -172,4 +192,179 @@ fn main() {
     info!("FFI BB count: {}", ffi_bb_cnt);
     info!("Function count: {}", function_cnt);
     info!("FFI function count: {}", ffi_cnt);
+
+    info!("Start Src Level Analyzer");
+    let mut interface_str = String::from("");
+    let functions = analyzer.functions();
+    let mut function_map = BTreeMap::new();
+
+    for function in functions {
+        let function_name = function.name.clone();
+        let mut bb_map = BTreeMap::new();
+        for bb in &function.basic_blocks {
+            let bb_name = bb.name.clone();
+            bb_map.insert(bb_name, bb.clone());
+        }
+        function_map.insert(function_name, (function.clone(), bb_map.clone()));
+    }
+
+    for ffi in &options.ffi_functions {
+        interface_str.push_str(&format!("ffi:{}\n", ffi));
+        let mut call_heads: BTreeSet<String> = BTreeSet::new();
+        let mut final_heads: BTreeSet<String> = BTreeSet::new();
+        let mut chain: BTreeMap<String, String> = BTreeMap::new();
+        let mut next_heads: BTreeSet<String> = BTreeSet::new();
+
+        call_heads.insert(ffi.to_string());
+        while !call_heads.is_empty() {
+            for head in call_heads {
+                let nexts = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    call_graph.callers(&head)
+                })) {
+                    Ok(callers) => callers,
+                    Err(_) => {
+                        final_heads.insert(head.clone());
+                        continue;
+                    }
+                };
+                let mut len = 0;
+                for next in nexts {
+                    len = len + 1;
+                    chain.insert(next.to_string().clone(), head.clone());
+                    next_heads.insert(next.to_string());
+                }
+                if len == 0 {
+                    final_heads.insert(head.clone());
+                }
+            }
+            call_heads = next_heads.clone();
+            next_heads.clear();
+        }
+        // info!("call_heads: {:#?}", call_heads);
+        // info!("final_heads: {:#?}", final_heads);
+        // info!("chain: {:#?}", chain);
+        for (idx, head) in final_heads.iter().enumerate() {
+            
+            let mut now = head.clone();
+            let mut next = chain.get(&now);
+            let mut result = Vec::new();
+            while next.is_some() {
+                let now_func = function_map.get(&now);
+                match now_func {
+                    Some((function, _)) => match function.get_debug_loc() {
+                        Some(debug_location) => {
+                            let debug_location = debug_location.clone();
+                            let file = debug_location.filename.clone();
+                            let line = debug_location.line;
+                            let column = debug_location.col;
+                            let debug_info = format!(
+                                "Function: {:?} file: {:?} line: {:?} column: {:?}",
+                                demangle_name(&now), &file, &line, &column
+                            );
+                            result.push(debug_info);
+                        }
+                        None => {
+                            error!("Function not found: {}", now);
+                            continue;
+                        }
+                    },
+                    None => {
+                        error!("Function not found: {}", now);
+                        continue;
+                    }
+                }
+                let next_str = next.unwrap();
+                let (_, bb_map) = match function_map.get(&now) {
+                    Some(function) => function,
+                    None => {
+                        error!("Function not found: {}", now);
+                        break;
+                    }
+                };
+                bb_map.iter().for_each(|(_bb_name, bb)| {
+                    for inst in &bb.instrs {
+                        match inst {
+                            llvm_ir::Instruction::Call(call) => {
+                                let call_function = &call.function;
+                                if call_function.is_right() {
+                                    let call_function = call_function.clone().right().unwrap();
+                                    match call_function {
+                                        llvm_ir::Operand::ConstantOperand(const_ref) => {
+                                            match const_ref.as_ref() {
+                                                llvm_ir::Constant::GlobalReference {
+                                                    name,
+                                                    ty: _,
+                                                } => {
+                                                    let name = name.to_string().chars().skip(1).collect::<String>();
+                                                    if name.eq(&next_str.clone()) {
+                                                        let debug_location = inst.get_debug_loc();
+                                                        match debug_location {
+                                                            Some(debug_info) => {
+                                                                let file = debug_info.filename.clone();
+                                                                let line = debug_info.line;
+                                                                let column = debug_info.col;
+                                                                let debug_info = format!(
+                                                                    "Function: {:?} file: {:?} line: {:?} column: {:?}",
+                                                                    demangle_name(&now), &file, &line, &column
+                                                                );
+                                                                result.push(debug_info);
+                                                            },
+                                                            None => {
+                                                                result.push("Unknown".to_string());
+                                                            },
+                                                        }
+                                                    } else {
+                                                        continue;
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                        llvm_ir::Operand::LocalOperand { name, ty: _ } => {
+                                            if name.to_string().chars().skip(1).collect::<String>().eq(&next_str.clone()) {
+                                                let debug_location = inst.get_debug_loc();
+                                                match debug_location {
+                                                    Some(debug_info) => {
+                                                        let file = debug_info.filename.clone();
+                                                        let line = debug_info.line;
+                                                        let column = debug_info.col;
+                                                        let debug_info = format!(
+                                                            "Function: {:?} file: {:?} line: {:?} column: {:?}",
+                                                            &now, &file, &line, &column
+                                                        );
+                                                        result.push(debug_info);
+                                                    },
+                                                    None => {
+                                                        result.push("Unknown".to_string());
+                                                    },
+                                                }
+                                            } else {
+                                                continue;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                now = next_str.to_string();
+                next = chain.get(&now);
+            }
+            
+            if result.is_empty() {
+                continue;
+            }
+            interface_str.push_str(&format!("chain: {}\n", idx));
+            for debug_info in result {
+                interface_str.push_str(&format!("{}\n", debug_info));
+            }
+            interface_str.push_str("--------\n\n");
+        }
+    }
+    let mut file = std::fs::File::create("interface.txt").unwrap();
+    std::io::Write::write_all(&mut file, interface_str.as_bytes()).unwrap();
+    info!("End Src Level Analyzer");
 }
