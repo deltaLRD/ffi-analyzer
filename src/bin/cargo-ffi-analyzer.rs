@@ -9,6 +9,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     env,
 };
+
+struct CallStackNode {
+    now: String,
+    pre: Option<String>,
+}
+
 fn main() {
     unsafe {
         std::env::set_var("RUST_LOG", "info");
@@ -31,27 +37,29 @@ fn main() {
     let ffi_cnt = &options.ffi_functions.len();
     let mut infect_functions = BTreeSet::new();
     for ffi in &options.ffi_functions {
+        let mut node_visit = BTreeMap::new();
+        let mut sub_dot_str = String::from("");
         info!("ffi:{}", ffi);
         infect_functions.insert(ffi.to_string());
-        let ffi_digest = md5::compute(ffi.as_bytes());
-        dot_str.push_str(&format!(
-            "    {} [color=red, label=\"{}\"];\n",
-            &format!("Node{:x}", ffi_digest),
+        let ffi_str = get_hash(&ffi);
+        sub_dot_str.push_str(&format!(
+            "        {} [color=red, label=\"{}\"];\n",
+            &format!("FFI{}_Node{}", &ffi_str, &ffi_str),
             ffi
         ));
         let mut queue = VecDeque::new();
-        let mut visit = BTreeMap::new();
+        
         queue.push_back(ffi.to_string());
-        visit.insert(ffi.to_string(), true);
+        node_visit.insert(ffi.to_string(), true);
         while !queue.is_empty() {
             let now = queue.pop_front().unwrap();
-            // if queue.len() > 1000 {
-            //     error!("OOM");
-            //     break;
-            // }
-            // let now_str = demangle_name(&now);
-            let now_str = &now;
-            let now_digest = md5::compute(now_str.as_bytes());
+            if queue.len() > 100 {
+                info!("now: {:?}", &now);
+                info!("queue: {:#?}", &queue);
+                error!("OOM");
+                break;
+            }
+            let now_str = get_hash(&now);
             let nexts = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 call_graph.callers(&now)
             })) {
@@ -62,30 +70,43 @@ fn main() {
                 }
             };
             for next in nexts {
-                match visit.get(&next.to_string()) {
+                match node_visit.get(&next.to_string()) {
                     Some(true) => {
+                        // info!("! Recursion risk !\n{} -> {}", &next, &now);
                         continue;
-                    }
+                    },
                     _ => {}
                 }
                 let next_dam_str = demangle_name(&next.to_string());
-                let next_str = &next.to_string();
-                let next_digest = md5::compute(next_str.as_bytes());
-
-                dot_str.push_str(&format!(
-                    "    {} [label=\"{}\"];\n",
-                    &format!("Node{:x}", next_digest),
-                    &next_dam_str
+                let next_str = get_hash(&next);
+                match node_visit.get(&next.to_string()) {
+                    Some(true) => {},
+                    _ => {
+                        sub_dot_str.push_str(&format!(
+                            "        {} [label=\"{}\"];\n",
+                            &format!("FFI{}_Node{}", &ffi_str, &next_str),
+                            &next_dam_str
+                        ));
+                        node_visit.insert(next.to_string(), true);
+                    }
+                }
+                
+                sub_dot_str.push_str(&format!(
+                    "        {} -> {};\n",
+                    &format!("FFI{}_Node{}", &ffi_str, &next_str),
+                    &format!("FFI{}_Node{}", &ffi_str, &now_str)
                 ));
-                dot_str.push_str(&format!(
-                    "    {} -> {};\n",
-                    &format!("Node{:x}", next_digest),
-                    &format!("Node{:x}", now_digest)
-                ));
-                infect_functions.insert(next_dam_str);
+                infect_functions.insert(next.to_string());
                 queue.push_back(next.to_string());
             }
         }
+        dot_str.push_str(&format!("    subgraph FFI{} {{\n", &ffi_str));
+        dot_str.push_str(&format!("        style=filled;\n"));
+        dot_str.push_str(&format!("        color=lightgrey;\n"));
+        dot_str.push_str(&format!("        label=\"{}\";\n", &ffi));
+        dot_str.push_str(&format!("        rankdir=LR;\n"));
+        dot_str.push_str(&format!("{}\n", &sub_dot_str));
+        dot_str.push_str(&format!("    }}\n"));
     }
 
     let dot_str = format!("digraph G {{\n    rankdir=LR;\n{}\n}}", dot_str);
@@ -121,9 +142,11 @@ fn main() {
 
             let mut sub_graph = String::from("");
             let bb = function.get_bb_by_name(&entry).unwrap();
+            let mut function_contain_ffi = false;
             let contain_ffi = bb_contains(bb, &infect_functions);
             if contain_ffi {
                 ffi_bb_cnt += 1;
+                function_contain_ffi = true;
                 // info!("function: {:?} bb:{:#?}", &demangle_name(&function_name), &bb.instrs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
                 sub_graph.push_str(&format!("        {} [label=\"{}\", color=red];\n", entry_str, function_label));
             } else {
@@ -133,10 +156,13 @@ fn main() {
 
             while !queue.is_empty() {
                 let now = queue.pop_front().unwrap();
-                // if queue.len() > 1000 {
-                //     error!("OOM");
-                //     break;
-                // }
+                if queue.len() > 100 {
+                    error!("CFG OOM:");
+                    info!("now: {:?}", &now);
+                    info!("queue: {:#?}", &queue);
+                    error!("OOM");
+                    break;
+                }
                 let now_str = format!("{}_BB{}", &function_str, get_hash(&now));
                 let nexts = control_flow_graph.succs(&now);
                 for next in nexts {
@@ -148,6 +174,7 @@ fn main() {
                                 let bb = function.get_bb_by_name(&next).unwrap();
                                 let contain_ffi = bb_contains(bb, &infect_functions);
                                 if contain_ffi {
+                                    function_contain_ffi = true;
                                     ffi_bb_cnt += 1;
                                     // info!("function: {:?} bb:{:#?}", &demangle_name(&function_name), &bb.instrs.iter().map(|x| x.to_string()).collect::<Vec<_>>());
                                     sub_graph.push_str(&format!("        {} [label=\"{}\", color=red];\n", &next_str, &next_label));
@@ -174,7 +201,9 @@ fn main() {
 
                 }
             }
-
+            if !function_contain_ffi {
+                continue;
+            }
             dot_str.push_str(&format!("    subgraph {} {{\n", &function_str));
             dot_str.push_str(&format!("        style=filled;\n"));
             dot_str.push_str(&format!("        color=lightgrey;\n"));
@@ -208,7 +237,12 @@ fn main() {
         function_map.insert(function_name, (function.clone(), bb_map.clone()));
     }
 
+    // let mut file = std::fs::File::create("interface.txt").unwrap();
+    // std::io::Write::write_all(&mut file, interface_str.as_bytes()).unwrap();
     for ffi in &options.ffi_functions {
+        // file.write(format!("ffi:{}\n", ffi).as_bytes()).unwrap();
+        // let mut chain_cnt = 0;
+        
         interface_str.push_str(&format!("ffi:{}\n", ffi));
         let mut call_heads: BTreeSet<String> = BTreeSet::new();
         let mut final_heads: BTreeSet<String> = BTreeSet::new();
@@ -217,7 +251,8 @@ fn main() {
 
         call_heads.insert(ffi.to_string());
         while !call_heads.is_empty() {
-            for head in call_heads {
+            
+            for head in call_heads.clone() {
                 let nexts = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     call_graph.callers(&head)
                 })) {
@@ -236,6 +271,12 @@ fn main() {
                 if len == 0 {
                     final_heads.insert(head.clone());
                 }
+            }
+            if call_heads.len() > 100 {
+                info!("call_heads: {:#?}", &call_heads);
+                info!("next_heads: {:#?}", &next_heads);
+                error!("OOM");
+                break;
             }
             call_heads = next_heads.clone();
             next_heads.clear();
@@ -355,6 +396,8 @@ fn main() {
             }
             
             if result.is_empty() {
+                interface_str.push_str(&format!("None\n"));
+                interface_str.push_str("--------\n\n");
                 continue;
             }
             interface_str.push_str(&format!("chain: {}\n", idx));
@@ -363,8 +406,8 @@ fn main() {
             }
             interface_str.push_str("--------\n\n");
         }
+
     }
-    let mut file = std::fs::File::create("interface.txt").unwrap();
-    std::io::Write::write_all(&mut file, interface_str.as_bytes()).unwrap();
+    
     info!("End Src Level Analyzer");
 }

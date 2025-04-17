@@ -1,6 +1,10 @@
 use llvm_ir::BasicBlock;
+use log::info;
 use rustc_demangle::demangle;
-use std::{collections::BTreeSet, hash::{DefaultHasher, Hash, Hasher}};
+use std::{
+    collections::BTreeSet,
+    hash::{DefaultHasher, Hash, Hasher},
+};
 
 pub fn demangle_name(name: &String) -> String {
     format!("{:#}", demangle(name))
@@ -24,12 +28,11 @@ pub fn bb_contains(bb: &BasicBlock, ffis: &BTreeSet<String>) -> bool {
                     match call_function {
                         llvm_ir::Operand::ConstantOperand(const_ref) => match const_ref.as_ref() {
                             llvm_ir::Constant::GlobalReference { name, ty: _ } => {
-                                let call_function_name = &demangle_name(
-                                    &name.to_string().chars().skip(1).collect::<String>(),
-                                );
+                                let call_function_name =
+                                    &name.to_string().chars().skip(1).collect::<String>();
                                 for ffi in ffis {
-                                    if call_function_name.contains(ffi) {
-                                        // info!("call_function: {:?} ffi: {:?}", call_function_name, ffi);
+                                    if call_function_name.eq(ffi) {
+                                        info!("call_function: {:?} ffi: {:?}", call_function_name, ffi);
                                         contain_ffi = true;
                                         break;
                                     }
@@ -41,9 +44,8 @@ pub fn bb_contains(bb: &BasicBlock, ffis: &BTreeSet<String>) -> bool {
                             _ => {}
                         },
                         llvm_ir::Operand::LocalOperand { name, ty: _ } => {
-                            let call_function_name = &demangle_name(
-                                &name.to_string().chars().skip(1).collect::<String>(),
-                            );
+                            let call_function_name =
+                                &name.to_string().chars().skip(1).collect::<String>();
                             for ffi in ffis {
                                 if call_function_name.contains(ffi) {
                                     // info!("call_function: {:?} ffi: {:?}", call_function_name, ffi);

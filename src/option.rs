@@ -1,20 +1,17 @@
 use std::{env::Args, fs::File, io::BufRead, path::Path};
 
-use log::{info, warn};
+use log::info;
 
-use crate::diagnosis;
 
 pub struct AnalysisOption {
     pub ffi_functions: Vec<String>,
     pub bitcode_paths: Vec<String>,
-    pub precision_threshold: diagnosis::Seriousness, // 0 1 2 = Low Med High
 }
 
 impl Default for AnalysisOption {
     fn default() -> Self {
         let mut ffi_functions = vec![];
         let mut bitcode_paths = vec![];
-        let precision_threshold = diagnosis::Seriousness::Low;
         info!("Start init Analyzer Option");
 
         let entry_points_path = Path::new("./target/entry_points");
@@ -47,7 +44,6 @@ impl Default for AnalysisOption {
         Self {
             ffi_functions,
             bitcode_paths,
-            precision_threshold,
         }
     }
 }
@@ -61,18 +57,6 @@ impl AnalysisOption {
                 match &arg[2..] {
                     "bitcode" => {
                         res.bitcode_paths.push(args[i+1].clone());
-                    }
-                    "precision_filter" => {
-                        let threshold = match &*args[i+1] {
-                            "high" => diagnosis::Seriousness::High,
-                            "mid" => diagnosis::Seriousness::Medium,
-                            "low" => diagnosis::Seriousness::Low,
-                            _ => {
-                                warn!("Unrecognized precision filter threshold, using default: Low");
-                                diagnosis::Seriousness::Low
-                            }
-                        };
-                        res.precision_threshold = threshold;
                     }
                     _ => {}
                 }
