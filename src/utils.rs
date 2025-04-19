@@ -1,10 +1,16 @@
 use llvm_ir::BasicBlock;
 use log::info;
 use rustc_demangle::demangle;
+use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeSet,
-    hash::{DefaultHasher, Hash, Hasher},
+    collections::BTreeSet, hash::{DefaultHasher, Hash, Hasher}
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CallStackInfo {
+    pub ffi_name: String,
+    pub call_stack: Vec<Vec<String>>,
+}
 
 pub fn demangle_name(name: &String) -> String {
     format!("{:#}", demangle(name))
