@@ -280,16 +280,17 @@ fn main() {
                 break;
             }
             // let demangle_now_str = demangle_name(&now);
-            let nexts = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let empty_nexts:Vec<&str> = vec![];
+            let nexts: Vec<&str> = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 call_graph.callers(&now)
             })) {
-                Ok(callers) => callers,
-                Err(_) => {
+                Ok(callers) => callers.collect(),
+                Err(err) => {
+                    error!("Error: {:?}", err);
                     error!("Error: {:?}", now);
-                    return ();
+                    empty_nexts
                 }
             };
-            let nexts: Vec<&str> = nexts.collect();
             if nexts.len() == 0 {
                 // add call stack to file
                 path.reverse();
