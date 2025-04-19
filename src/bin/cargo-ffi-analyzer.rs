@@ -12,7 +12,7 @@ use std::{
 
 fn main() {
     std::env::set_var("RUST_LOG", "info");
-    std::env::set_var("RUST_BACKTRACE", "1");
+    std::env::set_var("RUST_BACKTRACE", "full");
 
     // Initialize logger
     pretty_env_logger::init_timed();
