@@ -240,12 +240,7 @@ fn main() {
 
     for function in functions {
         let function_name = function.name.clone();
-        let mut bb_map = BTreeMap::new();
-        for bb in &function.basic_blocks {
-            let bb_name = bb.name.clone();
-            bb_map.insert(bb_name, bb.clone());
-        }
-        function_map.insert(function_name, (function.clone(), bb_map.clone()));
+        function_map.insert(function_name, function.clone());
     }
 
     let mut interfaces = Vec::new();
@@ -258,14 +253,7 @@ fn main() {
         };
         queue.push_back((ffi.to_string(), vec![]));
         visit.insert(
-            format!(
-                "Function:{} File:{} Line:{}, Column:{}",
-                ffi.to_string(),
-                "",
-                "",
-                ""
-            )
-            .to_string(),
+            ffi.to_string(),
             true,
         );
 
@@ -279,7 +267,7 @@ fn main() {
                 error!("OOM");
                 break;
             }
-            // let demangle_now_str = demangle_name(&now);
+            let demangle_now_str = demangle_name(&now);
             let empty_nexts:Vec<&str> = vec![];
             let nexts: Vec<&str> = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 call_graph.callers(&now)
@@ -291,123 +279,56 @@ fn main() {
                     empty_nexts
                 }
             };
+            // info!("now: {:?}", &demangle_now_str);
+            // info!("nexts: {:?}", &nexts);
+            // info!("queue: {:#?}", &queue.iter().take(10).collect::<Vec<_>>());
             if nexts.len() == 0 {
-                // add call stack to file
                 path.reverse();
                 interface.call_stack.push(path.clone());
                 continue;
             }
+            let mut next_unvisited_cnt = 0;
             for next in nexts {
                 let demangle_next_str = demangle_name(&next.to_string());
-                let bb_map = match function_map.get(&next.to_string()) {
-                    Some(function) => &function.1,
+                match visit.get(&next.to_string()) {
+                    Some(true) => {
+                        // info!("Already visited: {}", &demangle_next_str);
+                        continue;
+                    }
+                    _ => {}
+                }
+                next_unvisited_cnt += 1;
+
+                let next_function = match function_map.get(&next.to_string()) {
+                    Some(function) => function.clone(),
                     None => {
                         error!("Function not found: {}", now);
                         continue;
                     }
                 };
-                for bb in bb_map.values() {
-                    for inst in &bb.instrs {
-                        match inst {
-                            llvm_ir::Instruction::Call(call) => {
-                                let call_function = &call.function;
-                                if call_function.is_left() {
-                                    continue;
-                                }
-                                let call_function = call_function.clone().right().unwrap();
-                                match call_function {
-                                    llvm_ir::Operand::ConstantOperand(const_ref) => {
-                                        match const_ref.as_ref() {
-                                            llvm_ir::Constant::GlobalReference { name, ty: _ } => {
-                                                let name = name
-                                                    .to_string()
-                                                    .chars()
-                                                    .skip(1)
-                                                    .collect::<String>();
-                                                if !name.eq(&now) {
-                                                    continue;
-                                                }
-                                                let debug_location = inst.get_debug_loc();
-                                                match debug_location {
-                                                    Some(debug_info) => {
-                                                        let file = debug_info.filename.clone();
-                                                        let line = debug_info.line;
-                                                        let column = debug_info.col;
+                let mut debug_info_str = "Unknow".to_string();
+                match next_function.get_debug_loc() {
+                    Some(debug_info) => {
+                        let file = debug_info.filename.clone();
+                        let line = debug_info.line;
 
-                                                        let debug_info = format!(
-                                                            "Function: {:?} file: {:?} line: {:?} column: {:?}",
-                                                            demangle_next_str, &file, &line, &column
-                                                        );
+                        debug_info_str = format!(
+                            "Function: {:?} file: {:?} line: {:?}",
+                            demangle_next_str, &file, &line
+                        ).to_string();
 
-                                                        let key = format!(
-                                                            "Function:{} File:{} Line:{}, Column:{}",
-                                                            next, &file, &line, &column.unwrap_or(0).to_string()
-                                                        );
-
-                                                        if visit.get(&key).is_none() {
-                                                            visit.insert(key.clone(), true);
-                                                            let mut path_next = path.clone();
-                                                            path_next.push(debug_info);
-
-                                                            queue.push_back((
-                                                                next.to_string(),
-                                                                path_next,
-                                                            ));
-                                                        }
-                                                    }
-                                                    None => {
-                                                        continue;
-                                                    }
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    llvm_ir::Operand::LocalOperand { name, ty: _ } => {
-                                        let name =
-                                            name.to_string().chars().skip(1).collect::<String>();
-                                        if !name.eq(&now) {
-                                            continue;
-                                        }
-                                        let debug_location = inst.get_debug_loc();
-                                        match debug_location {
-                                            Some(debug_info) => {
-                                                let file = debug_info.filename.clone();
-                                                let line = debug_info.line;
-                                                let column = debug_info.col;
-
-                                                let debug_info = format!(
-                                                    "Function: {:?} file: {:?} line: {:?} column: {:?}",
-                                                    demangle_next_str, &file, &line, &column
-                                                );
-
-                                                let key = format!(
-                                                    "Function:{} File:{} Line:{}, Column:{}",
-                                                    next,
-                                                    &file,
-                                                    &line,
-                                                    &column.unwrap_or(0).to_string()
-                                                );
-
-                                                if visit.get(&key).is_none() {
-                                                    visit.insert(key.clone(), true);
-                                                    let mut path_next = path.clone();
-                                                    path_next.push(debug_info);
-                                                    queue.push_back((next.to_string(), path_next));
-                                                }
-                                            }
-                                            None => {
-                                                continue;
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
                     }
+                    None => {}
                 }
+                visit.insert(next.to_string(), true);
+                let mut path_next = path.clone();
+                path_next.push(debug_info_str);
+                queue.push_back((next.to_string(), path_next));
+            }
+            if next_unvisited_cnt == 0 {
+                path.reverse();
+                interface.call_stack.push(path.clone());
+                continue;
             }
         }
 
